@@ -1,5 +1,3 @@
-from embedding import embed_model
-from data_processing import doc_list
 from qdrant_client import qdrant_client
 from langchain_qdrant import QdrantVectorStore
 from dotenv import load_dotenv, dotenv_values
