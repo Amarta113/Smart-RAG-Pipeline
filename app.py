@@ -1,70 +1,136 @@
 import streamlit as st
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.messages import AIMessage, HumanMessage
+from dotenv import load_dotenv
+from langchain_community.document_loaders import WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from langchain_community.embeddings import HuggingFaceBgeEmbeddings
-from rag_chain import create_chain 
-from vectorstore import create_retriever
+from qdrant_client import qdrant_client
+from langchain_qdrant import QdrantVectorStore
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import PromptTemplate
+from langchain_groq import ChatGroq
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain.schema.runnable import RunnablePassthrough
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain.chains.combine_documents import create_stuff_documents_chain
+import os
 
+load_dotenv()
 
-def process_input(input_type, input_data):
-    if input_type == "PDF":
-            loader = PyPDFLoader(input_data)
-            documents = loader.load_and_split()
-    else:
-        raise ValueError("Invalid input data for PDF")
+def get_vector_store():
+    web_loader = WebBaseLoader("https://startuppakistan.com.pk/category/pakistan/",
+                               
+        )
 
-
-    #text splitter
-    txt_splitter  = RecursiveCharacterTextSplitter(
+    pages = web_loader.load_and_split()
+    
+    txt_splitter = RecursiveCharacterTextSplitter(
     chunk_size = 200,
     chunk_overlap = 20,
     length_function = len,
-    is_separator_regex= False
+    is_separator_regex=False
     )
 
+    
     doc_list = []
 
-    for page in documents:
-        if not page.page_content.strip():
-            continue
-        page_split = txt_splitter.split_text(page.page_content)
+    for page in pages:
+        pag_split = txt_splitter.split_text(page.page_content)
 
-        for page_sub_split in page_split:
-            metadata = {"source": "Book", "page_no": page.metadata.get('page', 0) + 1 }
-            doc_string = Document(page_content=page_sub_split, metadata=metadata)
+        for pag_sub_split in pag_split:
+            metadata = {"source": "Website", "page_no": page.metadata.get('page', 0) + 1}
+            doc_string = Document(page_content= pag_sub_split, metadata=metadata)
             doc_list.append(doc_string)
 
-    return doc_list
-
-
-def main():
-    st.set_page_config(page_title="Talk with PDF application", page_icon="🦜", layout="wide")
-    st.title('🦜🔗 Talk with PDF application')
-
-    uploaded_file = st.file_uploader("Upload a PDF file", type='pdf')
-
-    if uploaded_file is not None:
-         st.write("Processing the uploaded file...")
-         doc_list = process_input('PDF', uploaded_file)
-
-    model_name = 'BAAI/bge-small-en'    
+    model_name = 'BAAI/bge-small-en'
     embed_model = HuggingFaceBgeEmbeddings(model_name=model_name)
 
-    # Create retriever
-    retriever = create_retriever(doc_list, embed_model) 
+    vector_store = QdrantVectorStore.from_documents(
+                        doc_list,
+                        embed_model,
+                        url=os.getenv("qdrant_url"),
+                        api_key=os.getenv("qdrant_key"),
+                        collection_name='afiniti'
 
-    st.text_input("Ask the question from the PDF", key='user_question')
+                        )
 
-    user_question = st.session_state.get("user_question", "")
-
-    if user_question:
-        chain = create_chain(retriever)
-        answer = chain.invoke({"question": user_question})
-        st.write(f"Answer: {answer}")    
+    return vector_store
 
 
-if __name__ == '__main__':
-    main()
+def get_context_retriever_chain(vector_store):
+    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=os.getenv("groq_api_key"))
+    retriever = vector_store.as_retriever()
+
+    prompt = ChatPromptTemplate.from_messages([
+            MessagesPlaceholder(variable_name="chat_history"),
+            ("user", "{input}"),
+            ("user", "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation")
+        ])
+
+    retriever_chain = create_history_aware_retriever(llm, retriever, prompt)
+
+    return retriever_chain
+
+
+def get_converstional_rag_chain(retriever_chain):
+    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=os.getenv("groq_api_key"))
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", "Answer the user's question based on the below context: \n\n{context}"),
+        MessagesPlaceholder(variable_name="chat_history"),
+        ("user", "{input}")
+    ])
+
+    stuff_docs_chain = create_stuff_documents_chain(llm, prompt)
+    return create_retrieval_chain(retriever_chain, stuff_docs_chain)
+
+def get_response(user_query, vector_store):
+    retriever_chain = get_context_retriever_chain(vector_store)
+    conversation_rag_chain = get_converstional_rag_chain(retriever_chain)
+    response = conversation_rag_chain.invoke({
+                "chat_history": st.session_state.chat_history,
+                "input": user_query
+           })
+    return response['answer']
+    
+st.set_page_config(page_title="Web gpt")
+st.title("Chat with websites")
+
+#with st.sidebar:
+#    st.header("Settings")
+#    api_key = st.text_input("API key")
+
+#if api_key is None or api_key == "":
+#    st.info("Please enter your groq api key")
+
+
+
+    # session state
+if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            AIMessage(content="Hello, I am Afiniti GPT. ")
+        ]
+
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = get_vector_store()
+    
+vector_store = st.session_state.vector_store
+    # User Input
+user_query = st.chat_input("Type your message here...")
+if user_query is not None and user_query != "":
+        response = get_response(user_query, vector_store)
+        st.session_state.chat_history.append(HumanMessage(content=user_query))
+        st.session_state.chat_history.append(AIMessage(content=response))
+
+
+
+for message in st.session_state.chat_history:
+    if isinstance(message, AIMessage):
+        with st.chat_message("AI"):
+            st.write(message.content)
+    elif isinstance(message, HumanMessage):
+        with st.chat_message("Human"):
+            st.write(message.content)    
+
 
     
