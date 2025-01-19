@@ -15,12 +15,17 @@ from langchain.schema.runnable import RunnablePassthrough
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 import os
+from style import css, bot_template, user_template
 
 load_dotenv()
 
 def get_vector_store():
-    web_loader = WebBaseLoader("https://startuppakistan.com.pk/category/pakistan/",
-                               
+    web_loader = WebBaseLoader(["https://www.gaditek.com/","https://www.gaditek.com/our-impact/",
+                                "https://www.gaditek.com/careers/","https://www.gaditek.com/benefits/",
+                                "https://www.linkedin.com/company/gaditek/","https://www.linkedin.com/in/arqamgadit/",
+                                "https://www.linkedin.com/in/umairgadit/?originalSubdomain=ae","https://www.linkedin.com/company/wearedisrupt/",
+                                "https://disrupt.com/"
+                                ]                
         )
 
     pages = web_loader.load_and_split()
@@ -58,8 +63,8 @@ def get_vector_store():
     return vector_store
 
 
-def get_context_retriever_chain(vector_store):
-    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=os.getenv("groq_api_key"))
+def get_context_retriever_chain(vector_store, api_key):
+    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=api_key)
     retriever = vector_store.as_retriever()
 
     prompt = ChatPromptTemplate.from_messages([
@@ -73,8 +78,8 @@ def get_context_retriever_chain(vector_store):
     return retriever_chain
 
 
-def get_converstional_rag_chain(retriever_chain):
-    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=os.getenv("groq_api_key"))
+def get_converstional_rag_chain(retriever_chain, api_key):
+    llm = ChatGroq(model_name="mixtral-8x7b-32768", temperature=0, groq_api_key=api_key)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "Answer the user's question based on the below context: \n\n{context}"),
         MessagesPlaceholder(variable_name="chat_history"),
@@ -84,53 +89,50 @@ def get_converstional_rag_chain(retriever_chain):
     stuff_docs_chain = create_stuff_documents_chain(llm, prompt)
     return create_retrieval_chain(retriever_chain, stuff_docs_chain)
 
-def get_response(user_query, vector_store):
-    retriever_chain = get_context_retriever_chain(vector_store)
-    conversation_rag_chain = get_converstional_rag_chain(retriever_chain)
+def get_response(user_query, vector_store, api_key):
+    retriever_chain = get_context_retriever_chain(vector_store, api_key)
+    conversation_rag_chain = get_converstional_rag_chain(retriever_chain, api_key)
     response = conversation_rag_chain.invoke({
                 "chat_history": st.session_state.chat_history,
                 "input": user_query
            })
+            
     return response['answer']
-    
-st.set_page_config(page_title="Web gpt")
-st.title("Chat with websites")
 
-#with st.sidebar:
-#    st.header("Settings")
-#    api_key = st.text_input("API key")
+st.set_page_config(page_title="Gaditech", page_icon=":cyclone:")
+st.write(css, unsafe_allow_html=True)
 
-#if api_key is None or api_key == "":
-#    st.info("Please enter your groq api key")
+st.title("Gaditech AI Assistant")
+
+with st.sidebar:
+        st.header("Settings")
+        api_key = st.text_input("Groq API key")
+
+if api_key is None or api_key == "":
+    st.info("Please enter your groq api key")
 
 
-
+else:       
     # session state
-if "chat_history" not in st.session_state:
-        st.session_state.chat_history = [
-            AIMessage(content="Hello, I am Afiniti GPT. ")
-        ]
-
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = get_vector_store()
-    
-vector_store = st.session_state.vector_store
+    if "chat_history" not in st.session_state:
+            st.session_state.chat_history = [
+                AIMessage(content="Hello, I am Gaditech AI assistant. Ask me about Gaditech.")
+            ]
+    if "vector_store" not in st.session_state:
+        st.session_state.vector_store = get_vector_store()
+        
+    vector_store = st.session_state.vector_store
+        
     # User Input
-user_query = st.chat_input("Type your message here...")
-if user_query is not None and user_query != "":
-        response = get_response(user_query, vector_store)
-        st.session_state.chat_history.append(HumanMessage(content=user_query))
-        st.session_state.chat_history.append(AIMessage(content=response))
+    user_query = st.chat_input("Type your message here...")
+    if user_query is not None and user_query != "":
+            response = get_response(user_query, vector_store, api_key)      
+            st.session_state.chat_history.append(HumanMessage(content=user_query))
+            st.session_state.chat_history.append(AIMessage(content=response))
 
+    for message in st.session_state.chat_history:    
+        if isinstance(message, AIMessage):
+                st.write(bot_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
+        elif isinstance(message, HumanMessage):
+                st.write(user_template.replace("{{MSG}}", message.content), unsafe_allow_html=True)
 
-
-for message in st.session_state.chat_history:
-    if isinstance(message, AIMessage):
-        with st.chat_message("AI"):
-            st.write(message.content)
-    elif isinstance(message, HumanMessage):
-        with st.chat_message("Human"):
-            st.write(message.content)    
-
-
-    
